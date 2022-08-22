@@ -1,0 +1,131 @@
+name: CI
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup upterm session
+      uses: lhotari/action-upterm@v1
+    - name: Build
+      run: |
+        sudo apt-get install -y automake libtool nasm
+        mkdir leptonica
+        cd leptonica
+
+        export PREFIX=`pwd`/local
+        export CPPFLAGS="-I$PREFIX/include -I$PREFIX/x86_64-linux-musl/include -I$PREFIX/lib/gcc/x86_64-linux-musl/9.2.0/include"
+        export CFLAGS="-fPIC -O2 $CPPFLAGS -static-libgcc -nostdinc"
+        export CXXFLAGS="-fPIC -O2 -I$PREFIX/x86_64-linux-musl/include/c++/9.2.0 -I$PREFIX/x86_64-linux-musl/include/c++/9.2.0/x86_64-linux-musl $CPPFLAGS -static-libstdc++ -static-libgcc -include sys/time.h"
+        export LDFLAGS="-L$PREFIX/lib -static"
+        export PATH="$PREFIX/bin:$PREFIX/x86_64-linux-musl/bin:$PATH"
+
+        curl -sL https://github.com/richfelker/musl-cross-make/archive/refs/tags/v0.9.9.tar.gz | tar xzf -
+        curl -sL https://www.sourceware.org/pub/bzip2/bzip2-latest.tar.gz | tar xzf -
+        curl -sL https://zlib.net/zlib-1.2.12.tar.xz | tar xJf -
+        curl -sL https://tukaani.org/xz/xz-5.2.5.tar.xz | tar xJf -
+        curl -sL https://gitlab.gnome.org/GNOME/libxml2/-/archive/v2.9.14/libxml2-v2.9.14.tar.bz2 | tar xjf -
+        curl -sL https://www.libarchive.org/downloads/libarchive-3.6.1.tar.xz | tar xJf -
+
+        curl -sL https://github.com/DanBloomberg/leptonica/releases/download/1.82.0/leptonica-1.82.0.tar.gz | tar xzf -
+
+        curl -sL https://github.com/DanBloomberg/leptonica/releases/download/1.80.0/leptonica-1.80.0.tar.gz | tar xzf -
+
+        curl -sL https://github.com/tesseract-ocr/tesseract/archive/refs/tags/4.1.1.tar.gz | tar xzf -
+        curl -sL https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/2.0.7-esr.tar.gz | tar xzf -
+        curl -sL https://download.osgeo.org/libtiff/tiff-4.4.0.tar.xz | tar xJf -
+        curl -sL https://prdownloads.sourceforge.net/libpng/libpng-1.6.37.tar.xz?download | tar xJf -
+        curl -sL https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.2.3.tar.gz | tar xzf -
+        curl -sL https://sourceforge.net/projects/giflib/files/giflib-5.2.1.tar.gz/download | tar xzf -
+        curl -sL https://github.com/uclouvain/openjpeg/archive/refs/tags/v2.5.0.tar.gz | tar xzf -
+
+        cd musl-cross-make-0.9.9
+        cat > config.mak <<EOC
+        TARGET=x86_64-linux-musl
+        COMMON_CONFIG += --disable-nls
+        GCC_CONFIG += --disable-libitm
+        GCC_CONFIG += --enable-default-pie
+        EOC
+        make -sj`nproc` install OUTPUT=$PREFIX
+
+        export CC=x86_64-linux-musl-gcc
+        export CXX=x86_64-linux-musl-g++
+        cd ..
+
+        make -C giflib-5.2.1 -j`nproc` PREFIX=$PREFIX all install
+        make -C bzip2-1.0.8 install PREFIX=$PREFIX CFLAGS="-fPIC -O2 -D_FILE_OFFSET_BITS=64"
+
+        cd zlib-1.2.12
+        ./configure --static --prefix=$PREFIX
+        make -sj4 install
+        cd -
+
+        cd xz-5.2.5
+        ./configure --with-pic --disable-shared --prefix=$PREFIX
+        make -sj4 install
+        cd -
+
+        cd libxml2-v2.9.14
+        ./autogen.sh --enable-silent-rules --disable-shared --prefix=$PREFIX
+        make -sj4 install
+        cd -
+
+        cd libarchive-3.6.1
+        ./configure --with-pic --prefix=$PREFIX
+        make -sj4 install
+        cd -
+
+        cd libjpeg-turbo-2.0.7-esr
+        cmake -G"Unix Makefiles" -DWITH_JPEG8=1 -DCMAKE_INSTALL_PREFIX=$PREFIX
+        make -j`nproc`
+
+        cd ../libpng-1.6.37
+        ./configure --prefix=$PREFIX --enable-silent-rules
+        make -j`nproc` install
+
+        cd ../libwebp-1.2.3
+        ./configure --prefix=$PREFIX --enable-silent-rules
+        make -sj`nproc` install
+
+        mkdir -p ../openjpeg-2.5.0/build
+        cd ../openjpeg-2.5.0/build
+        cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$PREFIX -DOPJ_USE_THREAD=OFF -DBUILD_THIRDPARTY=OFF -DBUILD_CODEC=OFF -DBUILD_DOC=OFF
+        make -sj`nproc` install
+
+        cd ../../tiff-4.4.0
+        ./configure --prefix=$PREFIX --enable-silent-rules
+        make -sj`nproc` install
+
+        cd ../../leptonica-1.80.0
+        ./configure --prefix=$PREFIX --enable-shared --enable-static --disable-programs --with-pic
+        make -s -j4 install
+
+        cd ../tesseract-4.1.1
+        ./autogen.sh
+        LIBLEPT_HEADERSDIR=$PREFIX/include ./configure -q --prefix=$PREFIX --enable-static --enable-shared --enable-silent-rules --disable-openmp
+        make -s -j4 install
+        cd ..
+
+        gcc -shared -o liblept.so -Wl,--whole-archive local/lib/liblept.a -Wl,--no-whole-archive local/lib/libpng.a local/lib/libjpeg.a local/lib/libtiff.a local/lib/libz.a local/lib/liblzma.a local/lib/libgif.a local/lib/libwebp.a musl-cross-make-0.9.9/output/x86_64-linux-musl/lib/libc.a -nostdlib
+        gcc -shared -o libtesseract.so -Wl,--whole-archive local/lib/libtesseract.a -Wl,--no-whole-archive local/lib/liblept.a local/lib/libpng.a local/lib/libgif.a local/lib/libtiff.a local/lib/libarchive.a local/lib/libbz2.a local/lib/libz.a local/lib/libjpeg.a local/lib/liblzma.a musl-cross-make-0.9.9/output/x86_64-linux-musl/lib/libstdc++.a local/lib/libwebp.a musl-cross-make-0.9.9/output/x86_64-linux-musl/lib/libc.a musl-cross-make-0.9.9/output/lib/gcc/x86_64-linux-musl/9.2.0/libgcc.a -static-libgcc -nodefaultlibs
+
+        file liblept.so
+        file libtesseract.so
+        
+        cat > test.c <<EOT
+        #include <stdio.h>
+        #include <dlfcn.h>
+
+        int main() {
+        	printf("liblept.so=%p\n",dlopen("./liblept.so",RTLD_NOW));
+        	printf("libtesseract.so=%p\n",dlopen("./libtesseract.so",RTLD_NOW));
+        	return 0;
+        }
+        EOT
+        gcc -o test test.c
+        ./test
+    - name:
+      uses: actions/upload-artifact@v3
+        with:
+          name: libs-linux-x64
+          path: lib*.so
